@@ -5,6 +5,8 @@ import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import * as dotenv from 'dotenv'
 import { ofetch } from 'ofetch'
 import { z } from 'zod'
+import * as path from 'node:path'
+import * as fs from 'node:fs/promises'
 
 dotenv.config()
 
@@ -13,6 +15,8 @@ const execPromise = promisify(exec)
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY
 const YOUTUBE_API_BASE_URL = 'https://www.googleapis.com/youtube/v3'
 const YOUTUBE_MUSIC_WATCH_URL_PREFIX = 'https://music.youtube.com/watch?v='
+
+const DOWNLOAD_DIR = path.join(process.cwd(), 'downloads', 'audio')
 
 async function searchYoutubeVideo(
   apiKey: string,
@@ -39,35 +43,41 @@ async function searchYoutubeVideo(
   }
 }
 
-async function openUrlInBrowser(url: string, platform: NodeJS.Platform = process.platform): Promise<void> {
-  let command: string = ''
-
+async function downloadAudioWithYtDlp(videoUrl: string, videoTitle: string): Promise<string> {
   try {
-    if (platform === 'darwin') {
-      const appleScript = `tell application "Google Chrome" to open location "${url}"`
-      command = `osascript -e '${appleScript.replace(/'/g, "'\''")}'`
-      console.log(`Executing command for macOS: ${command}`)
-      const { stderr } = await execPromise(command)
-      if (stderr) {
-        console.warn('osascript stderr:', stderr)
-      }
+    await fs.mkdir(DOWNLOAD_DIR, { recursive: true })
+
+    const outputFilePath = path.join(DOWNLOAD_DIR, `${videoTitle}.%(ext)s`)
+    const command = `yt-dlp -x --audio-format mp3 -o "${outputFilePath}" "${videoUrl}"`
+    console.log(`Executing yt-dlp command: ${command}`)
+
+    const { stdout, stderr } = await execPromise(command)
+
+    if (stderr) {
+      console.warn('yt-dlp stderr:', stderr)
     }
-    else if (platform === 'win32') {
-      command = `start "" "${url}"`
-      console.log(`Executing command for Windows: ${command}`)
-      await execPromise(command)
+    console.log('yt-dlp stdout:', stdout)
+
+    const match = stdout.match(/\[ExtractAudio\] Destination: (.+\.mp3)/)
+    if (match && match) { // Corrected: return match
+      return match // Return the full path to the downloaded file
     }
     else {
-      // Assume Linux/other POSIX-like
-      command = `xdg-open "${url}"`
-      console.log(`Executing command for Linux/Other: ${command}`)
-      await execPromise(command)
+      // Fallback if regex doesn't match, try to find a file in the directory
+      const files = await fs.readdir(DOWNLOAD_DIR)
+      // Clean up title for filename matching, yt-dlp might sanitize it
+      const sanitizedTitle = videoTitle.replace(/[<>:"/\\|?*]/g, '_').substring(0, 50);
+      const downloadedFile = files.find((file: string) => file.includes(sanitizedTitle) && file.endsWith('.mp3')) // Explicitly type file
+      if (downloadedFile) {
+        return path.join(DOWNLOAD_DIR, downloadedFile)
+      }
+      throw new McpError(ErrorCode.InternalError, 'Could not determine downloaded audio file path.')
     }
   }
   catch (execError: unknown) {
-    console.error(`Error executing command "${command}":`, execError)
+    console.error(`Error executing yt-dlp command to download "${videoUrl}":`, execError)
     const errorMsg = execError instanceof Error ? execError.message : 'Unknown execution error'
-    throw new McpError(ErrorCode.InternalError, `Failed to open URL in browser: ${errorMsg}`)
+    throw new McpError(ErrorCode.InternalError, `Failed to download audio with yt-dlp: ${errorMsg}`)
   }
 }
 
@@ -85,7 +95,7 @@ export function registerToolYoutubeMusic({ mcp }: McpToolContext): void {
     {
       trackName: z.string().describe('The name of the track to search for'),
     },
-    async ({ trackName }) => {
+    async ({ trackName }: { trackName: string }) => { // Explicitly type trackName
       try {
         const searchResults = await searchYoutubeVideo(apiKey, trackName, 5)
         return {
@@ -107,11 +117,11 @@ export function registerToolYoutubeMusic({ mcp }: McpToolContext): void {
 
   mcp.tool(
     'playTrack',
-    'Search for a track on YouTube Music and open the top result in the default browser.',
+    'Search for a track on YouTube Music and download its audio.',
     {
-      trackName: z.string().describe('The name of the track to search for and play'),
+      trackName: z.string().describe('The name of the track to search for and download audio'),
     },
-    async ({ trackName }) => {
+    async ({ trackName }: { trackName: string }) => { // Explicitly type trackName
       try {
         const searchResults = await searchYoutubeVideo(apiKey, trackName, 1)
 
@@ -121,7 +131,7 @@ export function registerToolYoutubeMusic({ mcp }: McpToolContext): void {
           }
         }
 
-        const topResult = searchResults[0]
+        const topResult = searchResults // Corrected: use searchResults
         const videoId = topResult?.id?.videoId
         const title = topResult?.snippet?.title ?? 'Unknown Title'
 
@@ -130,12 +140,13 @@ export function registerToolYoutubeMusic({ mcp }: McpToolContext): void {
           throw new McpError(ErrorCode.InternalError, 'Could not extract video ID from YouTube search result.')
         }
 
-        const youtubeMusicUrl = `${YOUTUBE_MUSIC_WATCH_URL_PREFIX}${videoId}`
+        const youtubeVideoUrl = `https://www.youtube.com/watch?v=${videoId}`
 
-        await openUrlInBrowser(youtubeMusicUrl)
+        const downloadedFilePath = await downloadAudioWithYtDlp(youtubeVideoUrl, title)
 
         return {
-          content: [{ type: 'text', text: `Attempting to play in browser: ${title} (${youtubeMusicUrl})` }],
+          content: [{ type: 'text', text: `Downloaded audio for: ${title} to ${downloadedFilePath}` }],
+          audioUrl: downloadedFilePath, // Assuming the client can handle a local file path or a URL to serve it
         }
       }
       catch (error: unknown) {
@@ -147,10 +158,10 @@ export function registerToolYoutubeMusic({ mcp }: McpToolContext): void {
           ? error.message
           : error instanceof Error
             ? error.message
-            : 'An unexpected error occurred during track playback.'
+            : 'An unexpected error occurred during track download.'
 
         return {
-          content: [{ type: 'text', text: `Error playing track: ${message}` }],
+          content: [{ type: 'text', text: `Error downloading track: ${message}` }],
           isError: true,
         }
       }
