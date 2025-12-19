@@ -21,6 +21,9 @@ export async function startServer(
   const transport = new StdioServerTransport()
   try {
     await server.connect(transport)
+    // Keep the process alive indefinitely, allowing the MCP server to handle requests
+    // The server will be gracefully stopped by SIGTERM/SIGINT handlers in index.ts
+    await new Promise(() => { /* This promise never resolves */ })
   }
   catch (err) {
     console.error('Error starting server:', err)
