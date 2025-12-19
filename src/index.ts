@@ -5,7 +5,7 @@ import { registerToolYoutubeMusic } from './tools/youtube'
 
 (async function main() {
   const mcp = createServer({
-    name: 'my-mcp-server',
+    name: 'youtube-music-mcp',
     version: version || '0.0.1',
   })
 
