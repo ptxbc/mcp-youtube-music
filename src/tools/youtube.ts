@@ -15,7 +15,6 @@ const execPromise = promisify(exec)
 
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY
 const YOUTUBE_API_BASE_URL = 'https://www.googleapis.com/youtube/v3'
-const YOUTUBE_MUSIC_WATCH_URL_PREFIX = 'https://music.youtube.com/watch?v='
 
 async function searchYoutubeVideo(
   apiKey: string,
@@ -42,38 +41,6 @@ async function searchYoutubeVideo(
   }
 }
 
-async function openUrlInBrowser(url: string, platform: NodeJS.Platform = process.platform): Promise<void> {
-  let command: string = ''
-
-  try {
-    if (platform === 'darwin') {
-      const appleScript = `tell application "Google Chrome" to open location "${url}"`
-      command = `osascript -e '${appleScript.replace(/'/g, "'\''")}'`
-      console.log(`Executing command for macOS: ${command}`)
-      const { stderr } = await execPromise(command)
-      if (stderr) {
-        console.warn('osascript stderr:', stderr)
-      }
-    }
-    else if (platform === 'win32') {
-      command = `start "" "${url}"`
-      console.log(`Executing command for Windows: ${command}`)
-      await execPromise(command)
-    }
-    else {
-      // Assume Linux/other POSIX-like
-      command = `xdg-open "${url}"`
-      console.log(`Executing command for Linux/Other: ${command}`)
-      await execPromise(command)
-    }
-  }
-  catch (execError: unknown) {
-    console.error(`Error executing command "${command}":`, execError)
-    const errorMsg = execError instanceof Error ? execError.message : 'Unknown execution error'
-    throw new McpError(ErrorCode.InternalError, `Failed to open URL in browser: ${errorMsg}`)
-  }
-}
-
 async function downloadYoutubeAudio(
   videoId: string,
   outputDir?: string,
@@ -97,7 +64,7 @@ async function downloadYoutubeAudio(
     const fileLine = lines.find(line => line.includes('[ExtractAudio] Destination:'))
     let filePath: string | undefined
     if (fileLine) {
-      filePath = fileLine.split('Destination:')[1]?.trim()
+      filePath = fileLine.split('Destination:')?.trim() // Corrected
     }
     if (!filePath) {
       // Fallback: find the most recent .mp3 file in the directory
@@ -114,7 +81,7 @@ async function downloadYoutubeAudio(
         })
       )
       filesWithStats.sort((a, b) => b.mtimeMs - a.mtimeMs) // descending, most recent first
-      filePath = path.join(dir, filesWithStats[0].file)
+      filePath = path.join(dir, filesWithStats.file) // Corrected
     }
     console.log(`Downloaded audio to: ${filePath}`)
     return filePath
@@ -161,9 +128,9 @@ export function registerToolYoutubeMusic({ mcp }: McpToolContext): void {
 
   mcp.tool(
     'playTrack',
-    'Search for a track on YouTube Music and open the top result in the default browser.',
+    'Search for a track on YouTube Music, download the audio, and return the file path for playback.',
     {
-      trackName: z.string().describe('The name of the track to search for and play'),
+      trackName: z.string().describe('The name of the track to search for and download'),
     },
     async ({ trackName }) => {
       try {
@@ -175,7 +142,7 @@ export function registerToolYoutubeMusic({ mcp }: McpToolContext): void {
           }
         }
 
-        const topResult = searchResults[0]
+        const topResult = searchResults // Corrected
         const videoId = topResult?.id?.videoId
         const title = topResult?.snippet?.title ?? 'Unknown Title'
 
@@ -184,12 +151,13 @@ export function registerToolYoutubeMusic({ mcp }: McpToolContext): void {
           throw new McpError(ErrorCode.InternalError, 'Could not extract video ID from YouTube search result.')
         }
 
-        const youtubeMusicUrl = `${YOUTUBE_MUSIC_WATCH_URL_PREFIX}${videoId}`
-
-        await openUrlInBrowser(youtubeMusicUrl)
+        const filePath = await downloadYoutubeAudio(videoId)
 
         return {
-          content: [{ type: 'text', text: `Attempting to play in browser: ${title} (${youtubeMusicUrl})` }],
+          content: [
+            { type: 'text', text: `Downloaded audio for playback: ${title}` },
+            { type: 'text', text: `File path: ${filePath}` },
+          ],
         }
       }
       catch (error: unknown) {
@@ -201,10 +169,10 @@ export function registerToolYoutubeMusic({ mcp }: McpToolContext): void {
           ? error.message
           : error instanceof Error
             ? error.message
-            : 'An unexpected error occurred during track playback.'
+            : 'An unexpected error occurred during track download for playback.'
 
         return {
-          content: [{ type: 'text', text: `Error playing track: ${message}` }],
+          content: [{ type: 'text', text: `Error downloading track for playback: ${message}` }],
           isError: true,
         }
       }
@@ -227,7 +195,7 @@ export function registerToolYoutubeMusic({ mcp }: McpToolContext): void {
           }
         }
 
-        const topResult = searchResults[0]
+        const topResult = searchResults // Corrected
         const videoId = topResult?.id?.videoId
         const title = topResult?.snippet?.title ?? 'Unknown Title'
 
